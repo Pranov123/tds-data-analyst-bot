@@ -25,6 +25,13 @@ Rules:
 - Use fetch_binary_and_extract for any PDF or Excel (.xls/.xlsx) URL. Never use
   pandas.read_csv on a PDF — it will fail. MOSPI data is very often published as
   PDF or Excel, so check the file extension before choosing a tool.
+- MOSPI's live domain is mospi.gov.in — do NOT use mospi.nic.in, it does not
+  resolve and will always fail with a DNS error.
+- When writing Python for run_python, write proper multi-line code with real
+  newlines and indentation. Do not chain if/for statements with semicolons on
+  a single line (e.g. "for x in y: do_a(); do_b()") — that is invalid Python
+  syntax for compound statements and will fail with a SyntaxError. Write it as
+  normal multi-line code instead.
 - If a tool call fails, do not give up and guess. Try a different URL, a
   different parsing approach, or fetch_url to find the correct dataset page.
   Only give a final answer once you have real retrieved data backing it.
@@ -37,10 +44,12 @@ Rules:
 
 NUDGE_MESSAGE = (
     "You have not successfully retrieved any real data yet — all tool calls so "
-    "far have failed. Do not answer with a guess or a value from memory. Try a "
-    "different approach: check the file extension and use fetch_binary_and_extract "
-    "for PDF/Excel URLs, use fetch_url to inspect the page structure first, or "
-    "search for the correct dataset URL. Keep trying before giving a final answer."
+    "far have failed or errored (including syntax errors). Do not answer with a "
+    "guess or a value from memory. Try a different approach: check the file "
+    "extension and use fetch_binary_and_extract for PDF/Excel URLs, use fetch_url "
+    "to inspect the page structure first (remember: mospi.gov.in, not mospi.nic.in), "
+    "and write clean multi-line Python (no semicolon-chained if/for blocks) in "
+    "run_python. Keep trying before giving a final answer."
 )
 
 
@@ -62,6 +71,25 @@ def _extract_json(text: str):
         return json.loads(text[start : end + 1])
     except Exception:
         return None
+
+
+def _tool_call_succeeded(result) -> bool:
+    """Best-effort check for whether a tool call actually produced usable output,
+    rather than just checking if the string happens to start with 'ERROR'."""
+    r = str(result)
+    stripped = r.strip()
+
+    if stripped.startswith("ERROR"):
+        return False
+    if "Traceback (most recent call last)" in r:
+        return False
+    if "SyntaxError" in r or "NameError" in r or "TypeError" in r or "KeyError" in r:
+        return False
+    if "STDERR:\n" in r:
+        stderr_part = r.split("STDERR:\n", 1)[1].strip()
+        if stderr_part:
+            return False
+    return True
 
 
 def run_agent(question_text: str, history: list, log_path: str, log_url: str):
@@ -120,10 +148,15 @@ def run_agent(question_text: str, history: list, log_path: str, log_url: str):
                     except Exception as e:
                         result = f"ERROR running tool: {e}"
 
-                    if not str(result).strip().startswith("ERROR"):
+                    succeeded = _tool_call_succeeded(result)
+                    if succeeded:
                         any_tool_succeeded = True
 
-                    _log(logf, {"run_id": run_id, "event": "tool_result", "step": step, "tool": fn_name, "result": str(result)[:3000]})
+                    _log(logf, {
+                        "run_id": run_id, "event": "tool_result", "step": step,
+                        "tool": fn_name, "succeeded": succeeded,
+                        "result": str(result)[:3000],
+                    })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
