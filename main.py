@@ -10,7 +10,7 @@ from agent import run_agent
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
-BASE_URL = os.environ["BASE_URL"].rstrip("/")
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
 TG_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 LOG_DIR = "logs"
