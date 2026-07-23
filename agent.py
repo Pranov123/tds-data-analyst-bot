@@ -21,13 +21,27 @@ JSON shape the final answer must be in, including a "log_url" key.
 Rules:
 - Use the run_python tool to fetch/download data, compute, and verify numbers.
   Do not guess numeric answers — compute them.
-- Use fetch_url to preview a page/dataset before writing parsing code if unsure of its structure.
+- Use fetch_url to preview a text/HTML/CSV/JSON page before writing parsing code.
+- Use fetch_binary_and_extract for any PDF or Excel (.xls/.xlsx) URL. Never use
+  pandas.read_csv on a PDF — it will fail. MOSPI data is very often published as
+  PDF or Excel, so check the file extension before choosing a tool.
+- If a tool call fails, do not give up and guess. Try a different URL, a
+  different parsing approach, or fetch_url to find the correct dataset page.
+  Only give a final answer once you have real retrieved data backing it.
 - Iterate until you are confident in the answer.
 - When you are done, reply with ONLY the final JSON object, exactly matching
   the shape requested in the question. Put the literal string "PLACEHOLDER"
   as the value of log_url — it will be replaced automatically. No markdown,
   no explanation, no code fences — just the raw JSON object.
 """
+
+NUDGE_MESSAGE = (
+    "You have not successfully retrieved any real data yet — all tool calls so "
+    "far have failed. Do not answer with a guess or a value from memory. Try a "
+    "different approach: check the file extension and use fetch_binary_and_extract "
+    "for PDF/Excel URLs, use fetch_url to inspect the page structure first, or "
+    "search for the correct dataset URL. Keep trying before giving a final answer."
+)
 
 
 def _log(logf, obj):
@@ -62,7 +76,10 @@ def run_agent(question_text: str, history: list, log_path: str, log_url: str):
         _log(logf, {"run_id": run_id, "event": "start", "question": question_text})
 
         final_json = None
-        for step in range(10):
+        any_tool_succeeded = False
+        max_steps = 12
+
+        for step in range(max_steps):
             resp = client.chat.completions.create(
                 model=MODEL,
                 messages=messages,
@@ -102,6 +119,10 @@ def run_agent(question_text: str, history: list, log_path: str, log_url: str):
                         result = TOOL_IMPL[fn_name](**args)
                     except Exception as e:
                         result = f"ERROR running tool: {e}"
+
+                    if not str(result).strip().startswith("ERROR"):
+                        any_tool_succeeded = True
+
                     _log(logf, {"run_id": run_id, "event": "tool_result", "step": step, "tool": fn_name, "result": str(result)[:3000]})
                     messages.append({
                         "role": "tool",
@@ -111,18 +132,27 @@ def run_agent(question_text: str, history: list, log_path: str, log_url: str):
                     })
                 continue
 
-            # no tool calls -> treat as final answer
+            # no tool calls -> model thinks it's done
             parsed = _extract_json(msg.content or "")
-            if parsed is not None:
-                final_json = parsed
-            else:
-                final_json = {"answer": (msg.content or "").strip()}
+
+            if not any_tool_succeeded and step < max_steps - 1:
+                # Refuse to accept a guessed answer — push back and force retry.
+                _log(logf, {"run_id": run_id, "event": "rejected_guess", "step": step, "content": msg.content})
+                messages.append({"role": "assistant", "content": msg.content or ""})
+                messages.append({"role": "user", "content": NUDGE_MESSAGE})
+                continue
+
+            final_json = parsed if parsed is not None else {"answer": (msg.content or "").strip()}
             break
 
         if final_json is None:
             final_json = {"answer": None}
 
         final_json["log_url"] = log_url
-        _log(logf, {"run_id": run_id, "event": "final", "answer_json": final_json})
+        _log(logf, {
+            "run_id": run_id, "event": "final",
+            "any_tool_succeeded": any_tool_succeeded,
+            "answer_json": final_json,
+        })
 
     return final_json

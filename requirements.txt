@@ -5,3 +5,5 @@ groq
 pandas
 numpy
 python-dotenv
+pdfplumber
+openpyxl

@@ -1,5 +1,4 @@
 import io
-import json
 import subprocess
 import sys
 import tempfile
@@ -19,6 +18,47 @@ def fetch_url(url: str, max_chars: int = 15000) -> str:
         return text
     except Exception as e:
         return f"ERROR fetching {url}: {e}"
+
+
+def fetch_binary_and_extract(url: str, filetype: str = "auto") -> str:
+    """Download a PDF or Excel file and extract text/tables.
+    filetype: 'pdf', 'excel', or 'auto' (guess from URL)."""
+    import pdfplumber
+    import pandas as pd
+
+    try:
+        r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+    except Exception as e:
+        return f"ERROR downloading {url}: {e}"
+
+    ft = filetype
+    if ft == "auto":
+        if url.lower().endswith((".xls", ".xlsx")):
+            ft = "excel"
+        else:
+            ft = "pdf"
+
+    try:
+        if ft == "excel":
+            xls = pd.ExcelFile(io.BytesIO(r.content))
+            out = []
+            for sheet in xls.sheet_names[:3]:
+                df = xls.parse(sheet)
+                out.append(f"--- Sheet: {sheet} ---\n{df.head(30).to_string()}")
+            return "\n\n".join(out)[:12000]
+        else:
+            out = []
+            with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+                for i, page in enumerate(pdf.pages[:8]):
+                    text = page.extract_text() or ""
+                    tables = page.extract_tables()
+                    out.append(f"--- Page {i+1} text ---\n{text}")
+                    for t in tables:
+                        out.append(f"--- Page {i+1} table ---\n{t}")
+            return "\n\n".join(out)[:12000]
+    except Exception as e:
+        return f"ERROR parsing {url} as {ft}: {e}"
 
 
 def run_python(code: str, timeout: int = 60) -> str:
@@ -52,7 +92,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "fetch_url",
-            "description": "Fetch raw text/HTML/CSV/JSON content from a public URL. Use this to preview a dataset page or small file before writing code.",
+            "description": "Fetch raw text/HTML/CSV/JSON content from a public URL. Use this to preview a dataset page or small text/CSV/JSON file before writing code. Do NOT use this for PDF or Excel files — use fetch_binary_and_extract instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -65,8 +105,27 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_binary_and_extract",
+            "description": "Download a PDF or Excel file (e.g. MOSPI statistical tables, .pdf, .xls, .xlsx) and extract text/tables from it. Use this instead of run_python/pd.read_csv whenever the URL points to a PDF or Excel file — pandas.read_csv cannot read PDFs directly and will error.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "filetype": {
+                        "type": "string",
+                        "enum": ["pdf", "excel", "auto"],
+                        "description": "Defaults to 'auto', which guesses from the URL extension.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_python",
-            "description": "Execute Python code to download/parse/analyze data. pandas, numpy and requests are pre-installed. Always print() the final result you need.",
+            "description": "Execute Python code to parse/compute/analyze data already retrieved (e.g. via fetch_url or fetch_binary_and_extract), or to download/parse CSV/JSON data directly. pandas, numpy and requests are pre-installed. Always print() the final result you need. Do not use pd.read_csv on PDF or Excel URLs.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -78,4 +137,8 @@ TOOL_SCHEMAS = [
     },
 ]
 
-TOOL_IMPL = {"fetch_url": fetch_url, "run_python": run_python}
+TOOL_IMPL = {
+    "fetch_url": fetch_url,
+    "fetch_binary_and_extract": fetch_binary_and_extract,
+    "run_python": run_python,
+}
